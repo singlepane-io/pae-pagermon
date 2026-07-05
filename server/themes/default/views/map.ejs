@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title><%= monitorName %> - Alerts Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; z-index: 1; }
+
+    .panel {
+      position: absolute; z-index: 1000; top: 10px; left: 10px;
+      background: rgba(255,255,255,0.96); border-radius: 10px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.35); padding: 10px 12px;
+      max-width: calc(100vw - 20px);
+    }
+    .panel h1 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
+    .panel .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .panel label { font-size: 12px; color: #444; display: flex; flex-direction: column; gap: 3px; }
+    .panel select, .panel button {
+      font-size: 14px; padding: 7px 9px; border: 1px solid #ccc; border-radius: 7px;
+      background: #fff; min-height: 38px;
+    }
+    .panel button { cursor: pointer; background: #1f6feb; color: #fff; border-color: #1f6feb; font-weight: 600; }
+    .panel button.secondary { background: #fff; color: #1f6feb; }
+    .panel .chk { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; }
+    .panel .chk input { width: 18px; height: 18px; }
+    .stats { margin-top: 8px; font-size: 12px; color: #555; line-height: 1.5; }
+    .stats b { color: #222; }
+    .stats .warn { color: #b8860b; }
+    .home { font-size: 12px; text-decoration: none; color: #1f6feb; }
+    .spin { display: none; margin-left: 6px; color: #1f6feb; }
+    .spin.on { display: inline; }
+    .leaflet-popup-content { font-size: 13px; line-height: 1.45; }
+    .leaflet-popup-content .alias { font-weight: 700; }
+    .leaflet-popup-content .meta { color: #666; font-size: 11px; margin: 2px 0 6px; }
+    .leaflet-popup-content .msg { white-space: pre-wrap; word-break: break-word; }
+    @media (max-width: 600px) {
+      .panel { top: 8px; left: 8px; right: 8px; padding: 9px 10px; }
+      .panel .row { gap: 6px; }
+      .panel select, .panel button { flex: 1 1 auto; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h1><%= monitorName %> — Alerts Map <span id="spin" class="spin">&#9696;</span></h1>
+    <div class="row">
+      <label>Time window
+        <select id="hours">
+          <option value="1">Last 1 hour</option>
+          <option value="3">Last 3 hours</option>
+          <option value="6">Last 6 hours</option>
+          <option value="12">Last 12 hours</option>
+          <option value="24" selected>Last 24 hours</option>
+          <option value="48">Last 48 hours</option>
+          <option value="168">Last 7 days</option>
+        </select>
+      </label>
+      <label>Unit
+        <select id="unit"><option value="">All units</option></select>
+      </label>
+      <label class="chk"><input type="checkbox" id="auto"> Auto&nbsp;refresh</label>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+    <div class="stats" id="stats">Loading&hellip;</div>
+    <div><a class="home" href="/">&#8592; Back to PagerMon</a></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script>
+  (function () {
+    var center = ('<%= defaultCenter %>').split(',');
+    var lat = parseFloat(center[0]) || 47.9789;
+    var lon = parseFloat(center[1]) || -122.2021;
+    var zoom = parseInt('<%= defaultZoom %>', 10) || 10;
+
+    var map = L.map('map', { tap: false }).setView([lat, lon], zoom);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    var cluster = L.markerClusterGroup({ maxClusterRadius: 45, spiderfyOnMaxZoom: true });
+    map.addLayer(cluster);
+
+    var hoursSel = document.getElementById('hours');
+    var unitSel = document.getElementById('unit');
+    var autoChk = document.getElementById('auto');
+    var statsEl = document.getElementById('stats');
+    var spin = document.getElementById('spin');
+    var timer = null;
+    var knownUnits = false;
+    var didFit = false;
+
+    // restore filters from the URL if present
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('hours')) hoursSel.value = params.get('hours');
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return '';
+      var d = new Date(ts * 1000);
+      return d.toLocaleString();
+    }
+
+    function markerColor(c) {
+      if (!c) return '#1f6feb';
+      return c;
+    }
+
+    function popupHtml(p) {
+      var when = fmtTime(p.timestamp);
+      var head = p.alias ? esc(p.alias) : ('Capcode ' + esc(p.capcode));
+      var meta = [];
+      if (p.agency) meta.push(esc(p.agency));
+      if (p.address) meta.push(esc(p.address));
+      if (when) meta.push(esc(when));
+      return '<div class="alias">' + head + '</div>' +
+             '<div class="meta">' + meta.join(' &middot; ') + '</div>' +
+             '<div class="msg">' + esc(p.message) + '</div>';
+    }
+
+    function updateUnits(units, selected) {
+      // Only (re)build the unit list once, so choosing a unit doesn't wipe the list.
+      if (knownUnits) return;
+      knownUnits = true;
+      var frag = '<option value="">All units</option>';
+      for (var i = 0; i < units.length; i++) {
+        var u = units[i];
+        var label = u.agency && u.agency !== u.alias ? (u.alias + ' (' + u.agency + ')') : u.alias;
+        frag += '<option value="' + esc(u.alias) + '">' + esc(label) + '</option>';
+      }
+      unitSel.innerHTML = frag;
+      if (selected) unitSel.value = selected;
+    }
+
+    function render(data) {
+      cluster.clearLayers();
+      var markers = [];
+      for (var i = 0; i < data.points.length; i++) {
+        var p = data.points[i];
+        var m = L.circleMarker([p.lat, p.lon], {
+          radius: 8, weight: 2, color: '#fff',
+          fillColor: markerColor(p.color), fillOpacity: 0.9
+        });
+        m.bindPopup(popupHtml(p));
+        markers.push(m);
+      }
+      cluster.addLayers(markers);
+
+      var s = data.stats;
+      var html = '<b>' + s.mapped + '</b> mapped of <b>' + s.total + '</b> pages · last ' + data.hours + 'h';
+      if (s.unmapped) html += '<br><span class="warn">' + s.unmapped + ' without a locatable address</span>';
+      if (s.pending) html += '<br><span class="warn">' + s.pending + ' still geocoding — refresh shortly</span>';
+      statsEl.innerHTML = html;
+
+      // Fit to the pages the first time we get some, then leave the view alone.
+      if (!didFit && markers.length) {
+        didFit = true;
+        try { map.fitBounds(cluster.getBounds().pad(0.15)); } catch (e) {}
+      }
+    }
+
+    function load() {
+      spin.classList.add('on');
+      var qs = 'hours=' + encodeURIComponent(hoursSel.value) + '&unit=' + encodeURIComponent(unitSel.value);
+      fetch('/map/data?' + qs, { credentials: 'same-origin' })
+        .then(function (r) {
+          if (r.status === 401) { window.location = '/auth/login'; return null; }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          updateUnits(data.units, unitSel.value);
+          render(data);
+        })
+        .catch(function (e) {
+          statsEl.innerHTML = '<span class="warn">Could not load data: ' + esc(e.message) + '</span>';
+        })
+        .then(function () { spin.classList.remove('on'); });
+    }
+
+    function setAuto(on) {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (on) timer = setInterval(load, 60000);
+    }
+
+    hoursSel.addEventListener('change', function () { didFit = false; load(); });
+    unitSel.addEventListener('change', function () { didFit = false; load(); });
+    document.getElementById('refresh').addEventListener('click', load);
+    autoChk.addEventListener('change', function () { setAuto(autoChk.checked); });
+
+    load();
+  })();
+  </script>
+</body>
+</html>

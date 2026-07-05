@@ -90,6 +90,7 @@ var index = require('./routes/index');
 var admin = require('./routes/admin');
 var api = require('./routes/api');
 var auth = require('./routes/auth');
+var map = require('./routes/map');
 
 var port = normalizePort(process.env.PORT || '3000');
 var app = express();
@@ -178,6 +179,7 @@ app.use(function(req, res, next) {
 
 
 app.use('/', index);
+app.use('/map', map);
 app.use('/admin', admin);
 app.use('/post', api);
 app.use('/api', api);

@@ -83,6 +83,9 @@ client/config/backup.json
 
 *.db
 
+# map geocode cache (runtime generated)
+geocache.json
+
 # cloud9
 
 .c9
