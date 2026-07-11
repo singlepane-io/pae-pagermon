@@ -17,6 +17,23 @@ It is built around POCSAG messages, but should easily support other message type
 
 The UI is built around a Node/Express/Angular/Bootstrap stack, while the client scripts are Node scripts that receive piped input.
 
+## Sno911 combined map
+
+The `/map` view can read the same Postgres event warehouse as the Sno911
+combined Grafana dashboard. Set `SNO911_PG_DSN` in the PagerMon server process
+environment to enable combined PagerMon, FirstWatch, IceOut, and earthquake
+layers. Without it, the map falls back to the original PagerMon SQLite/geocoder
+path.
+
+The map defaults to 24 hours, refreshes every minute, and renders events from
+the last hour as larger pulsing markers above the clustered older events. The
+maximum selectable window is 24 hours. Set `SNO911_PG_SSL=true` only when the
+database endpoint requires TLS.
+
+The database role used by `SNO911_PG_DSN` should be read-only and needs `SELECT`
+on `observations`, `page_details`, `firstwatch_details`, `iceout_push_alert`, and
+`quake_details` (plus access to PostGIS functions).
+
 ## Features
 
 * Capcode aliasing with colors and [FontAwesome](https://fontawesome.io/icons/) icons
